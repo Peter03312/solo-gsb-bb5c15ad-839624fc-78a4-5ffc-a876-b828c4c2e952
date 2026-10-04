@@ -81,11 +81,11 @@ function solve(events, selected, relations) {
     incoming.get(r.laterId).push(r);
   }
 
-  // Kahn 拓扑
+  // Kahn 拓扑（头指针代替 shift，长链下保持线性时间）
   const order = [];
   const queue = events.filter((e) => indeg.get(e.id) === 0).map((e) => e.id);
-  while (queue.length) {
-    const id = queue.shift();
+  for (let head = 0; head < queue.length; head++) {
+    const id = queue[head];
     order.push(id);
     for (const { to } of adj.get(id)) {
       indeg.set(to, indeg.get(to) - 1);
@@ -144,6 +144,9 @@ function solve(events, selected, relations) {
 }
 
 // Tarjan 强连通分量：返回包含有向环的 SCC（含自环），按出现顺序给出节点与边键。
+// 迭代实现（显式调用栈）：逐日相接的长链草稿可能深达数千层，
+// 递归实现会触发调用栈溢出（RangeError），这里用显式栈帧模拟递归，
+// 遍历顺序与递归版完全一致（先序 DFS、出边按插入序），找到的 SCC 相同。
 function findCycleSCC(ids, adj) {
   let index = 0;
   const idx = new Map();
@@ -152,44 +155,61 @@ function findCycleSCC(ids, adj) {
   const onStack = new Set();
   let found = null;
 
-  const strongConnect = (v) => {
-    if (found) return;
+  // 显式调用栈帧：{ v, nextEdge } —— nextEdge 是 v 的下一条待处理出边下标
+  const frames = [];
+
+  const pushFrame = (v) => {
     idx.set(v, index);
     low.set(v, index);
     index++;
     stack.push(v);
     onStack.add(v);
-
-    for (const { to } of adj.get(v)) {
-      if (!idx.has(to)) {
-        strongConnect(to);
-        if (found) return;
-        low.set(v, Math.min(low.get(v), low.get(to)));
-      } else if (onStack.has(to)) {
-        low.set(v, Math.min(low.get(v), idx.get(to)));
-      }
-    }
-
-    if (low.get(v) === idx.get(v)) {
-      const comp = [];
-      let w;
-      do {
-        w = stack.pop();
-        onStack.delete(w);
-        comp.push(w);
-      } while (w !== v);
-      // SCC 内多于 1 个节点即有环；单节点检查自环
-      if (comp.length > 1 || adj.get(v).some((e) => e.to === v)) {
-        found = { nodeIds: comp };
-      }
-    }
+    frames.push({ v, nextEdge: 0 });
   };
 
   for (const id of ids) {
-    if (!idx.has(id)) {
-      strongConnect(id);
+    if (idx.has(id)) continue;
+    pushFrame(id);
+
+    while (frames.length) {
+      const frame = frames[frames.length - 1];
+      const v = frame.v;
+      const edges = adj.get(v);
+
+      if (frame.nextEdge < edges.length) {
+        const { to } = edges[frame.nextEdge];
+        frame.nextEdge++;
+        if (!idx.has(to)) {
+          pushFrame(to); // 进入子调用
+        } else if (onStack.has(to)) {
+          low.set(v, Math.min(low.get(v), idx.get(to)));
+        }
+        continue;
+      }
+
+      // v 的子调用全部返回：弹帧，并把 low[v] 沿树边回传给父帧
+      frames.pop();
+      if (frames.length) {
+        const parent = frames[frames.length - 1].v;
+        low.set(parent, Math.min(low.get(parent), low.get(v)));
+      }
+
+      if (low.get(v) === idx.get(v)) {
+        const comp = [];
+        let w;
+        do {
+          w = stack.pop();
+          onStack.delete(w);
+          comp.push(w);
+        } while (w !== v);
+        // SCC 内多于 1 个节点即有环；单节点检查自环
+        if (comp.length > 1 || adj.get(v).some((e) => e.to === v)) {
+          found = { nodeIds: comp };
+        }
+      }
       if (found) break;
     }
+    if (found) break;
   }
   return found;
 }

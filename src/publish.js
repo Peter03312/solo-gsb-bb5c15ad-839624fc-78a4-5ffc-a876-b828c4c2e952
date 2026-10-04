@@ -59,9 +59,11 @@ function buildFrozenSnapshot(evalResult) {
     return a.title.localeCompare(b.title, 'zh-Hans-CN');
   });
 
+  // 主张按 id 索引，避免长链草稿下逐事件线性查找（O(n²)）
+  const claimsById = new Map(claims.map((c) => [c.id, c]));
   const eventRows = sorted.map((ev, i) => {
     const sel = selected.get(ev.id);
-    const claimRow = claims.find((c) => c.id === sel.claimId);
+    const claimRow = claimsById.get(sel.claimId);
     return {
       eventId: ev.id,
       title: ev.title,

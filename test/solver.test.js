@@ -142,3 +142,53 @@ test('无边时各事件取区间起点', () => {
   assert.strictEqual(isoFromOrdinal(r.dates.get(1)), '1962-01-01');
   assert.strictEqual(isoFromOrdinal(r.dates.get(2)), '1962-10-01');
 });
+
+// 逐日相接的长链（编辑者分批整理数千事件）：不得触发调用栈溢出
+function longChain(n, { tailEnd } = {}) {
+  const evs = [];
+  const sels = [];
+  const rels = [];
+  for (let i = 1; i <= n; i++) {
+    evs.push({ id: i, title: `事件${i}` });
+    const isTail = tailEnd && i === n;
+    sels.push(sel(i, '1950-01-01', isTail ? tailEnd : '1990-12-31'));
+    if (i > 1) rels.push({ id: i - 1, earlierId: i - 1, laterId: i });
+  }
+  return { evs, selected: selectedMap(sels), rels };
+}
+
+test('长链求解：6000 事件逐日相接，可解且逐日严格 +1、均在区间内', () => {
+  const { evs, selected, rels } = longChain(6000);
+  const r = solve(evs, selected, rels);
+  assert.strictEqual(r.ok, true);
+  for (let i = 1; i <= 6000; i++) {
+    const d = r.dates.get(i);
+    const s = selected.get(i);
+    assert.ok(d >= s.startOrd && d <= s.endOrd, `事件 ${i} 求解日期应在主张区间内`);
+    if (i > 1) assert.ok(r.dates.get(i) >= r.dates.get(i - 1) + 1, `事件 ${i} 应严格晚于前一事件至少一天`);
+  }
+  assert.strictEqual(isoFromOrdinal(r.dates.get(1)), '1950-01-01');
+  assert.strictEqual(isoFromOrdinal(r.dates.get(6000)), '1966-06-05');
+});
+
+test('长链成环：6000 链加回边报 cycle 且不溢出，列出涉事事件与关系', () => {
+  const { evs, selected, rels } = longChain(6000);
+  rels.push({ id: 6000, earlierId: 6000, laterId: 1, source: '回边出处' });
+  const r = solve(evs, selected, rels);
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.errors[0].type, 'cycle');
+  assert.strictEqual(r.errors[0].eventIds.length, 6000);
+  assert.ok(r.errors[0].relationIds.includes(6000));
+  assert.match(r.errors[0].detail, /回边出处/);
+});
+
+test('长链时间无解：报 temporal 并给出贯穿全链的见证链', () => {
+  const { evs, selected, rels } = longChain(6000, { tailEnd: '1950-06-30' });
+  const r = solve(evs, selected, rels);
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.errors[0].type, 'temporal');
+  assert.deepStrictEqual(r.errors[0].eventIds[0], 1);
+  assert.deepStrictEqual(r.errors[0].eventIds[r.errors[0].eventIds.length - 1], 6000);
+  assert.strictEqual(r.errors[0].eventIds.length, 6000);
+  assert.strictEqual(r.errors[0].relationIds.length, 5999);
+});

@@ -122,6 +122,41 @@ curl -s -X DELETE -H "X-Editor-Token: $TOKEN" "$BASE/api/editor/schedules/1"  # 
 
 到期后预约详情的 `status` 变为 `published`（附 `resultVersionNo`）或 `conflict`（附 `resultMessage`，冻结内容仍在 `frozen` 中）。完整可运行的端到端示例见 `examples/schedule-example.sh`（建预约、改草稿验证冻结、等待自动发布、抢先发布触发冲突、取消与各类 400/409/422，约 25 秒）。
 
+### 长链草稿（数千事件逐日相接）
+
+编辑者分批整理出**逐日相接的数千个事件**（如 6000 个事件、5999 条「先于」关系连成一条链）时，校验、即时发布与预约建立都在秒级完成，且三个入口对同一草稿的求解结果**逐事件一致**。求解器全程为迭代实现（成环检测用显式栈的 Tarjan SCC、拓扑排序用头指针队列），**不会因链长触发调用栈溢出**；链长只受草稿规模本身限制。
+
+- **可解时**：每个事件的求解日期仍落在其选定主张的覆盖区间内，每条「先于」关系两端严格相差至少一天（与短草稿完全同一套规则）。
+- **无解时**：错误类型与见证信息不变——`cycle` 列出成环的涉事事件与关系，`temporal` 给出一条导致矛盾的见证链；校验（`POST /api/editor/validate` 返回 `ok:false`）、即时发布（**422**）、预约建立（**422**）按各自既有结构反馈，且**都不写入版本或预约**。
+- 基准版本冲突（**409**）、不可变快照与公开读出规则与短草稿一致。
+
+大批量录入建议走「采访整理包导入」（见下节）：把事件分批（如每批 2000 个，单个请求体须小于 1 MB）导入，再补跨批的衔接关系。本轮调用示例（假设草稿已是 6000 事件长链，每事件一条主张）：
+
+```bash
+TOKEN=editor
+BASE=http://localhost:3000
+# selection：每事件选定一条主张（与短草稿同一格式，可用导入返回的 idMap 组装）
+SEL='[{"eventId":1,"claimId":1},{"eventId":2,"claimId":2}, … {"eventId":6000,"claimId":6000}]'
+
+# 1) 校验：ok:true 时 preview 给出 6000 个求解日期（首日 1950-01-01、末日 1966-06-05）
+curl -s -X POST "$BASE/api/editor/validate" -H "Content-Type: application/json" \
+  -H "X-Editor-Token: $TOKEN" -d '{"selection":'"$SEL"'}'
+# => {"ok":true,"preview":[{"eventId":…,"resolvedDate":"1950-01-01",…}, …]}
+
+# 2) 即时发布：201，版本含全部 6000 事件 / 5999 关系，求解日期与校验预览一致
+curl -s -X POST "$BASE/api/editor/publish" -H "Content-Type: application/json" \
+  -H "X-Editor-Token: $TOKEN" \
+  -d '{"selection":'"$SEL"',"baseVersionNo":0,"editor":"志愿者小王","note":"长链首版"}'
+
+# 3) 预约建立：201，冻结内容中的求解日期与即时发布逐事件一致
+AT=$(node -e 'console.log(new Date(Date.now()+300000).toISOString().replace(/\.\d{3}Z$/,"Z"))')
+curl -s -X POST "$BASE/api/editor/schedules" -H "Content-Type: application/json" \
+  -H "X-Editor-Token: $TOKEN" \
+  -d '{"selection":'"$SEL"',"scheduledAt":"'"$AT"'","baseVersionNo":1}'
+```
+
+完整可运行的端到端示例见 `examples/long-chain-example.sh`（分批导入 6000 事件长链 → 校验/发布/预约三方一致性 → 成环与时间无解的失败一致性 → 预约到期自动发布比对，约 30 秒；可用 `N=6000 BATCH=2000` 调整链长与批大小）。
+
 ### 从历史版本恢复草稿（预览 → 确认）
 
 编辑台右侧「已发布版本」中，每个版本都有「预览并恢复草稿」按钮。恢复**不产生新版本、不改动任何历史快照**，只替换草稿区：
