@@ -81,11 +81,11 @@ function solve(events, selected, relations) {
     incoming.get(r.laterId).push(r);
   }
 
-  // Kahn 拓扑
+  // Kahn 拓扑（头指针代替 shift，数千事件长链下保持 O(V+E)）
   const order = [];
   const queue = events.filter((e) => indeg.get(e.id) === 0).map((e) => e.id);
-  while (queue.length) {
-    const id = queue.shift();
+  for (let head = 0; head < queue.length; head++) {
+    const id = queue[head];
     order.push(id);
     for (const { to } of adj.get(id)) {
       indeg.set(to, indeg.get(to) - 1);
@@ -144,6 +144,10 @@ function solve(events, selected, relations) {
 }
 
 // Tarjan 强连通分量：返回包含有向环的 SCC（含自环），按出现顺序给出节点与边键。
+//
+// 用显式工作栈实现，与递归版遍历次序、lowlink 规则、分量弹出顺序完全一致，
+// 但不占用 JS 调用栈——数千事件逐日相接的长链不会再触发栈溢出。
+// 每个帧 { v, next }：v 为当前节点，next 为下一条待处理邻边下标。
 function findCycleSCC(ids, adj) {
   let index = 0;
   const idx = new Map();
@@ -152,44 +156,61 @@ function findCycleSCC(ids, adj) {
   const onStack = new Set();
   let found = null;
 
-  const strongConnect = (v) => {
-    if (found) return;
+  const startNode = (v) => {
     idx.set(v, index);
     low.set(v, index);
     index++;
     stack.push(v);
     onStack.add(v);
-
-    for (const { to } of adj.get(v)) {
-      if (!idx.has(to)) {
-        strongConnect(to);
-        if (found) return;
-        low.set(v, Math.min(low.get(v), low.get(to)));
-      } else if (onStack.has(to)) {
-        low.set(v, Math.min(low.get(v), idx.get(to)));
-      }
-    }
-
-    if (low.get(v) === idx.get(v)) {
-      const comp = [];
-      let w;
-      do {
-        w = stack.pop();
-        onStack.delete(w);
-        comp.push(w);
-      } while (w !== v);
-      // SCC 内多于 1 个节点即有环；单节点检查自环
-      if (comp.length > 1 || adj.get(v).some((e) => e.to === v)) {
-        found = { nodeIds: comp };
-      }
-    }
   };
 
-  for (const id of ids) {
-    if (!idx.has(id)) {
-      strongConnect(id);
-      if (found) break;
+  // 逐根推进 DFS；每棵树用显式帧栈模拟递归 strongConnect 的调用层级
+  for (const root of ids) {
+    if (idx.has(root)) continue;
+
+    const work = [];
+    startNode(root);
+    work.push({ v: root, next: 0 });
+
+    while (work.length && !found) {
+      const frame = work[work.length - 1];
+      const edges = adj.get(frame.v);
+
+      if (frame.next < edges.length) {
+        const { to } = edges[frame.next];
+        frame.next++;
+        if (!idx.has(to)) {
+          startNode(to);
+          work.push({ v: to, next: 0 });
+        } else if (onStack.has(to)) {
+          low.set(frame.v, Math.min(low.get(frame.v), idx.get(to)));
+        }
+        continue;
+      }
+
+      // v 的邻边全部处理完：弹出帧，并按递归规则把 low 回传给父节点
+      work.pop();
+      if (work.length) {
+        const parent = work[work.length - 1].v;
+        low.set(parent, Math.min(low.get(parent), low.get(frame.v)));
+      }
+
+      if (low.get(frame.v) === idx.get(frame.v)) {
+        const comp = [];
+        let w;
+        do {
+          w = stack.pop();
+          onStack.delete(w);
+          comp.push(w);
+        } while (w !== frame.v);
+        // SCC 内多于 1 个节点即有环；单节点检查自环
+        if (comp.length > 1 || adj.get(frame.v).some((e) => e.to === frame.v)) {
+          found = { nodeIds: comp };
+        }
+      }
     }
+
+    if (found) break;
   }
   return found;
 }

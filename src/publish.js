@@ -52,6 +52,8 @@ function evaluateDraft(selectionList) {
 function buildFrozenSnapshot(evalResult) {
   const { dates, events, selected, relations, claims } = evalResult;
 
+  const claimsById = new Map(claims.map((c) => [c.id, c]));
+
   const sorted = [...events].sort((a, b) => {
     const da = dates.get(a.id);
     const db2 = dates.get(b.id);
@@ -61,7 +63,7 @@ function buildFrozenSnapshot(evalResult) {
 
   const eventRows = sorted.map((ev, i) => {
     const sel = selected.get(ev.id);
-    const claimRow = claims.find((c) => c.id === sel.claimId);
+    const claimRow = claimsById.get(sel.claimId);
     return {
       eventId: ev.id,
       title: ev.title,
